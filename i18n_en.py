@@ -1041,4 +1041,6 @@ EN = {
     "黑科技": "Cursed",
     "Modrinth 上没有适配当前版本的文件": "No file on Modrinth matches this game version",
     "没在 Modrinth 上找到这个 Mod": "This mod was not found on Modrinth",
+    "前置资源": "Prerequisites",
+    " 项前置": " required",
 }

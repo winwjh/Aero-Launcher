@@ -3629,6 +3629,36 @@ def cf_search(rtype, q="", mc="", loader="", offset=0, limit=24):
             "items": items}
 
 
+def _cf_mods(ids):
+    """批量取 CurseForge 项目信息： modId -> 原始 mod 对象"""
+    ids = [x for x in dict.fromkeys(ids) if x][:100]
+    if not ids:
+        return {}
+    try:
+        r = requests.post(f"{CF_API}/mods", json={"modIds": ids},
+                          headers=_cf_headers(), timeout=30)
+        r.raise_for_status()
+        arr = r.json().get("data", [])
+    except Exception:
+        return {}
+    return {m.get("id"): m for m in (arr or [])}
+
+
+def _cf_dep_meta(m):
+    """把 CurseForge 的 mod 对象压成前端好显示的前置条目"""
+    return {
+        "title": m.get("name", ""),
+        "slug": str(m.get("id", "")),
+        "icon": (m.get("logo") or {}).get("thumbnailUrl") or "",
+        "desc": (m.get("summary") or "")[:160],
+        "downloads": m.get("downloadCount", 0),
+        "updated": m.get("dateModified", ""),
+        "color": 0,
+        "source": "cf",
+        "website": (m.get("links") or {}).get("websiteUrl") or "",
+    }
+
+
 def cf_versions(mod_id, mc="", loader=""):
     """CurseForge 文件列表，标准化成和 Modrinth version 一样的结构"""
     params = {"pageSize": 40, "sort": 1}   # 1 = 按上传时间倒序
@@ -3637,8 +3667,18 @@ def cf_versions(mod_id, mc="", loader=""):
     if loader and loader in CF_LOADER_TYPE:
         params["modLoaderType"] = CF_LOADER_TYPE[loader]
     files = _cf_get(f"/mods/{mod_id}/files", params) or []
+    files = files[:40]
+
+    # 先把这 40 个文件要的前置 mod 收齐，一次批量查详情（不能每个文件查一次）
+    need = [d.get("modId") for f in files
+            for d in (f.get("dependencies") or [])
+            if d.get("relationType") == 3 and d.get("modId")]
+    mods = _cf_mods(need)
+
     out = []
-    for f in files[:40]:
+    for f in files:
+        deps = [d.get("modId") for d in (f.get("dependencies") or [])
+                if d.get("relationType") == 3 and d.get("modId")]
         out.append({
             "id": str(f.get("id", "")),
             "name": f.get("displayName") or f.get("fileName", ""),
@@ -3654,6 +3694,8 @@ def cf_versions(mod_id, mc="", loader=""):
             "date_full": f.get("fileDate", ""),
             "type": {2: "release", 3: "alpha", 4: "beta"}.get(
                 f.get("fileStatus"), "release"),
+            "dep_count": len(deps),
+            "deps": [_cf_dep_meta(mods[x]) for x in deps if x in mods],
         })
     return out
 
@@ -3695,6 +3737,35 @@ def resource_search(rtype, q="", mc="", loader="", category="", offset=0, limit=
     return {"total": d.get("total_hits", 0), "items": items}
 
 
+def _mr_projects(ids):
+    """批量取 Modrinth 项目信息： project_id -> 前端好显示的前置条目"""
+    ids = [x for x in dict.fromkeys(ids) if x][:100]
+    if not ids:
+        return {}
+    try:
+        r = requests.get(f"{MODRINTH_API}/projects", params={"ids": json.dumps(ids)},
+                         timeout=30)
+        r.raise_for_status()
+        arr = r.json()
+    except Exception:
+        return {}
+    out = {}
+    for p in arr or []:
+        ptype = p.get("project_type", "mod")
+        out[p.get("id", "")] = {
+            "title": p.get("title", ""),
+            "slug": p.get("slug", ""),
+            "icon": p.get("icon_url", ""),
+            "desc": (p.get("description") or "")[:160],
+            "downloads": p.get("downloads", 0),
+            "updated": p.get("updated", ""),
+            "color": p.get("color") or 0,
+            "source": "modrinth",
+            "website": f"https://modrinth.com/{ptype}/{p.get('slug', '')}",
+        }
+    return out
+
+
 def resource_versions(slug, mc="", loader=""):
     params = {}
     if mc:
@@ -3703,10 +3774,20 @@ def resource_versions(slug, mc="", loader=""):
         params["loaders"] = json.dumps([loader])
     r = requests.get(f"{MODRINTH_API}/project/{slug}/version", params=params, timeout=30)
     r.raise_for_status()
+    vs = r.json()[:40]
+
+    # 把这批文件要的前置项目收齐，一次批量查（Modrinth 的 dependencies 已经随版本返回）
+    need = [d.get("project_id") for v in vs
+            for d in (v.get("dependencies") or [])
+            if d.get("dependency_type") == "required" and d.get("project_id")]
+    metas = _mr_projects(need)
+
     out = []
-    for v in r.json()[:40]:
+    for v in vs:
         flist = v.get("files") or []
         f = next((x for x in flist if x.get("primary")), flist[0] if flist else {})
+        dep_ids = [d.get("project_id") for d in (v.get("dependencies") or [])
+                   if d.get("dependency_type") == "required" and d.get("project_id")]
         out.append({
             "id": v.get("id", ""),
             "name": v.get("name") or v.get("version_number", ""),
@@ -3720,6 +3801,8 @@ def resource_versions(slug, mc="", loader=""):
             "downloads": v.get("downloads", 0),
             "date_full": v.get("date_published", ""),
             "type": v.get("version_type", "release"),
+            "dep_count": len(dep_ids),
+            "deps": [metas[x] for x in dep_ids if x in metas],
         })
     return out
 

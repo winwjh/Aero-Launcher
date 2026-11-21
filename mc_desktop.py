@@ -22,7 +22,7 @@ import server as backend
 import error_analyzer
 from mc_i18n import tr, load_saved_lang, get_lang
 
-APP_VERSION = "3.4.56"
+APP_VERSION = "3.4.57"
 # 默认更新源（Cloudflare Pages 托管的 update.json，可在设置里改）
 DEFAULT_UPDATE_URL = "https://mclauncher-update.pages.dev/update.json"
 # 赞助入口：主用微信赞赏码（本地图片，离线可用），网页作为备用打开方式
@@ -2163,6 +2163,64 @@ class _ResGroupCard(QWidget):
         self.bar.set_expanded(on)
 
 
+class _ResDepBlock(QWidget):
+    """分组里的「前置资源」区：展开后先看要装的前置，再看版本列表"""
+
+    def __init__(self, deps, meta_text, icon_cache=None):
+        super().__init__()
+        from PySide6.QtGui import QFontMetrics
+        c = theme_colors()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(2, 8, 2, 8)
+        lay.setSpacing(6)
+        head = QLabel(tr("前置资源"))
+        head.setStyleSheet(f"color:{SUB}; font-size:12px; font-weight:bold;"
+                           " background: transparent; padding-left: 2px;")
+        lay.addWidget(head)
+        self.icon_labels = []
+        cache = icon_cache or {}
+        for d in deps:
+            card = QFrame()
+            card.setObjectName("ResDepCard")
+            card.setStyleSheet(
+                f"#ResDepCard {{ background:#ffffff; border:1px solid {c['line']};"
+                " border-radius:12px; }}"
+                "#ResDepCard QLabel { background: transparent; border: none; }")
+            rl = QHBoxLayout(card)
+            rl.setContentsMargins(12, 10, 14, 10)
+            rl.setSpacing(12)
+            ic = QLabel()
+            ic.setFixedSize(46, 46)
+            url = d.get("icon", "")
+            pm = cache.get(url)
+            ic.setPixmap(_round_icon(pm, 46, 11) if pm is not None else _ph_icon(d, 46))
+            rl.addWidget(ic, 0, Qt.AlignTop)
+            if url:
+                self.icon_labels.append((ic, url))
+            box = QVBoxLayout()
+            box.setContentsMargins(0, 0, 0, 0)
+            box.setSpacing(2)
+            nm = QLabel(d.get("title", ""))
+            nm.setStyleSheet(f"color:{TEXT}; font-size:13.5px; font-weight:bold;")
+            box.addWidget(nm)
+            ds = QLabel()
+            ds.setStyleSheet(f"color:{SUB}; font-size:11.5px;")
+            fm = QFontMetrics(ds.font())
+            ds.setText(fm.elidedText(d.get("desc", ""), Qt.ElideRight, 720))
+            box.addWidget(ds)
+            mt = QLabel(meta_text(d))
+            mt.setStyleSheet("color:#8a949c; font-size:11px;")
+            box.addWidget(mt)
+            rl.addLayout(box, 1)
+            lay.addWidget(card)
+
+    def refresh_icons(self, cache):
+        for lab, url in self.icon_labels:
+            pm = cache.get(url)
+            if pm is not None:
+                lab.setPixmap(_round_icon(pm, 46, 11))
+
+
 class _ResFileRow(QWidget):
     """详情页里的一行文件：徽标 + 「Sodium 0.9.3-beta.4 for NeoForge 26.3」+ 元信息"""
 
@@ -2211,8 +2269,10 @@ class _ResFileRow(QWidget):
             parts.append(" / ".join(lds))
         if v.get("filename"):
             parts.append(v["filename"])
+        if v.get("dep_count"):
+            parts.append(f"{v['dep_count']}{tr(' 项前置')}")
         if v.get("downloads"):
-            parts.append(f"{tr('下载 ')}{v['downloads']}{tr(' 次')}")
+            parts.append(f"{tr('下载 ')}{_fmt_count(v['downloads'])}{tr(' 次')}")
         if v.get("date_full"):
             parts.append(f"{tr('更新于 ')}{_rel_time(v['date_full'])}")
         parts.append(_ver_type_label(v.get("type")))
@@ -3145,6 +3205,11 @@ class DownloadPage(QWidget):
                     ic.setPixmap(_round_icon(self._icon_cache[mod["icon"]], 64, 14))
                 except RuntimeError:
                     pass
+            for blk in st.get("dep_blocks") or []:
+                try:
+                    blk.refresh_icons(self._icon_cache)
+                except RuntimeError:
+                    pass
 
     def res_reset(self, rtype):
         st = self.res[rtype]
@@ -3425,6 +3490,7 @@ class DownloadPage(QWidget):
         bl = st["dbody_lay"]
         _clear_layout(bl)
         st["rows"] = []
+        st["dep_blocks"] = []
         sel_mc = st["cur_mc"]
         groups = {}
         for v in st["files"]:
@@ -3456,6 +3522,19 @@ class DownloadPage(QWidget):
             if kind != "release":
                 title += f" {tr('预览版')}"
             rows = []
+            # 这一组文件要的前置（通常整组一致，取并集去重）
+            dep_seen = {}
+            for v in files:
+                for d in (v.get("deps") or []):
+                    k = d.get("slug") or d.get("title")
+                    if k and k not in dep_seen:
+                        dep_seen[k] = d
+            if dep_seen:
+                deps = list(dep_seen.values())
+                blk = _ResDepBlock(deps, self._mod_meta, self._icon_cache)
+                rows.append(blk)
+                st["dep_blocks"].append(blk)
+                self._load_icons(deps)
             sel = st.get("sel_ver") or {}
             for v in files:
                 r = _ResFileRow(v, on_pick=lambda vv, w, dbl=False, k=rtype:
